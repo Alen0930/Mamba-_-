@@ -1,0 +1,101 @@
+============================================================================
+Mamba 完整训练
+============================================================================
+开始时间: 2026-09-03 23:07:30
+设备: cuda (NVIDIA GeForce RTX 5060 Laptop GPU)
+数据集: datasets/ba_corehd_full
+超参数: epochs=100, patience=15, batch_size=8, lr=0.001, d_model=64, n_layers=2
+============================================================================
+
+[1/3] Loading dataset...
+      train=80 samples, val=20 samples (0.2s)
+
+[2/3] Building data loaders...
+      train batches=10, val batches=3
+
+[3/3] Training...
+
+模型参数量: 65,665
+----------------------------------------------------------------------------
+Epoch 1/100 | Train Loss: 5503.3644 | Val Loss: 6785.7861 | Time: 58.95s
+Epoch 2/100 | Train Loss: 5463.1294 | Val Loss: 6710.8525 | Time: 60.35s
+Epoch 3/100 | Train Loss: 5323.4531 | Val Loss: 6429.1725 | Time: 56.57s
+Epoch 4/100 | Train Loss: 5237.2396 | Val Loss: 6354.6685 | Time: 59.49s
+Epoch 5/100 | Train Loss: 5099.3899 | Val Loss: 6261.2736 | Time: 60.43s
+Epoch 6/100 | Train Loss: 5015.3443 | Val Loss: 6144.9383 | Time: 59.47s
+Epoch 7/100 | Train Loss: 4909.4864 | Val Loss: 6061.2734 | Time: 59.04s
+Epoch 8/100 | Train Loss: 4875.8922 | Val Loss: 6033.5114 | Time: 60.33s
+Epoch 9/100 | Train Loss: 4850.5673 | Val Loss: 6009.1074 | Time: 58.07s
+Epoch 10/100 | Train Loss: 4832.1227 | Val Loss: 5971.9390 | Time: 58.88s
+Epoch 11/100 | Train Loss: 4815.9161 | Val Loss: 5958.4474 | Time: 59.28s
+Epoch 12/100 | Train Loss: 4790.1154 | Val Loss: 5950.1165 | Time: 62.21s
+Epoch 13/100 | Train Loss: 4773.8042 | Val Loss: 5921.5889 | Time: 60.21s
+Epoch 14/100 | Train Loss: 4749.5334 | Val Loss: 5898.7842 | Time: 59.13s
+Epoch 15/100 | Train Loss: 4734.5965 | Val Loss: 5886.9199 | Time: 60.10s
+Epoch 16/100 | Train Loss: 4727.2346 | Val Loss: 5872.3978 | Time: 61.81s
+Epoch 17/100 | Train Loss: 4727.7598 | Val Loss: 5852.8783 | Time: 59.93s
+Epoch 18/100 | Train Loss: 4735.5262 | Val Loss: 5845.8901 | Time: 60.98s
+Epoch 19/100 | Train Loss: 4706.3685 | Val Loss: 5830.7743 | Time: 58.81s
+Epoch 20/100 | Train Loss: 4696.7519 | Val Loss: 5838.4852 | Time: 56.39s
+Epoch 21/100 | Train Loss: 4692.5243 | Val Loss: 5814.7002 | Time: 56.94s
+Epoch 22/100 | Train Loss: 4686.3929 | Val Loss: 5829.2529 | Time: 59.35s
+Epoch 23/100 | Train Loss: 4681.7450 | Val Loss: 5802.4832 | Time: 59.73s
+Epoch 24/100 | Train Loss: 4677.0330 | Val Loss: 5797.8817 | Time: 60.46s
+Epoch 25/100 | Train Loss: 4678.3081 | Val Loss: 5824.5745 | Time: 60.96s
+Epoch 26/100 | Train Loss: 4677.9560 | Val Loss: 5814.8877 | Time: 59.77s
+Epoch 27/100 | Train Loss: 4671.8056 | Val Loss: 5786.7682 | Time: 61.17s
+Epoch 28/100 | Train Loss: 4670.5079 | Val Loss: 5786.0688 | Time: 57.82s
+Epoch 29/100 | Train Loss: 4670.9703 | Val Loss: 5782.5034 | Time: 61.55s
+Epoch 30/100 | Train Loss: 4670.2347 | Val Loss: 5809.1702 | Time: 59.27s
+Epoch 31/100 | Train Loss: 4684.3273 | Val Loss: 5825.8462 | Time: 57.29s
+Epoch 32/100 | Train Loss: 4684.6877 | Val Loss: 5815.8994 | Time: 57.92s
+Epoch 33/100 | Train Loss: 4671.6695 | Val Loss: 5782.3823 | Time: 60.23s
+Epoch 34/100 | Train Loss: 4667.3539 | Val Loss: 5781.3851 | Time: 59.60s
+Epoch 35/100 | Train Loss: 4665.2114 | Val Loss: 5802.4272 | Time: 59.21s
+Epoch 36/100 | Train Loss: 4676.3705 | Val Loss: 5799.5767 | Time: 57.18s
+Epoch 37/100 | Train Loss: 4672.3438 | Val Loss: 5795.1074 | Time: 57.48s
+Epoch 38/100 | Train Loss: 4669.3408 | Val Loss: 5788.2280 | Time: 57.00s
+Epoch 39/100 | Train Loss: 4663.3205 | Val Loss: 5776.1095 | Time: 59.80s
+Epoch 40/100 | Train Loss: 4662.5272 | Val Loss: 5777.9036 | Time: 60.36s
+Epoch 41/100 | Train Loss: 4662.9540 | Val Loss: 5780.6667 | Time: 60.28s
+Epoch 42/100 | Train Loss: 4669.9897 | Val Loss: 5811.4341 | Time: 59.45s
+Epoch 43/100 | Train Loss: 4666.8646 | Val Loss: 5806.2503 | Time: 57.90s
+Epoch 44/100 | Train Loss: 4662.3644 | Val Loss: 5791.2546 | Time: 58.85s
+Epoch 45/100 | Train Loss: 4660.2546 | Val Loss: 5783.9015 | Time: 57.73s
+Epoch 46/100 | Train Loss: 4656.6620 | Val Loss: 5779.3792 | Time: 59.94s
+Epoch 47/100 | Train Loss: 4667.6835 | Val Loss: 5781.0534 | Time: 60.44s
+Epoch 48/100 | Train Loss: 4658.5623 | Val Loss: 5776.8353 | Time: 55.63s
+Epoch 49/100 | Train Loss: 4658.7754 | Val Loss: 5796.5944 | Time: 59.19s
+Epoch 50/100 | Train Loss: 4661.7944 | Val Loss: 5781.7095 | Time: 57.10s
+Epoch 51/100 | Train Loss: 4656.0634 | Val Loss: 5768.8221 | Time: 57.02s
+Epoch 52/100 | Train Loss: 4654.7615 | Val Loss: 5770.6449 | Time: 58.49s
+Epoch 53/100 | Train Loss: 4653.5560 | Val Loss: 5772.3597 | Time: 59.58s
+Epoch 54/100 | Train Loss: 4656.2544 | Val Loss: 5773.3753 | Time: 60.53s
+Epoch 55/100 | Train Loss: 4651.5741 | Val Loss: 5774.7054 | Time: 59.66s
+Epoch 56/100 | Train Loss: 4652.6284 | Val Loss: 5773.7168 | Time: 56.61s
+Epoch 57/100 | Train Loss: 4658.0483 | Val Loss: 5773.9761 | Time: 59.31s
+Epoch 58/100 | Train Loss: 4655.4862 | Val Loss: 5771.1079 | Time: 58.71s
+Epoch 59/100 | Train Loss: 4653.2612 | Val Loss: 5769.4762 | Time: 59.18s
+Epoch 60/100 | Train Loss: 4654.1958 | Val Loss: 5780.6981 | Time: 58.73s
+Epoch 61/100 | Train Loss: 4655.3484 | Val Loss: 5785.2318 | Time: 60.14s
+Epoch 62/100 | Train Loss: 4668.4162 | Val Loss: 5792.7026 | Time: 59.33s
+Epoch 63/100 | Train Loss: 4653.2186 | Val Loss: 5771.7855 | Time: 59.76s
+Epoch 64/100 | Train Loss: 4653.2714 | Val Loss: 5774.4634 | Time: 58.42s
+Epoch 65/100 | Train Loss: 4650.4385 | Val Loss: 5769.5034 | Time: 56.77s
+Epoch 66/100 | Train Loss: 4656.8395 | Val Loss: 5780.4220 | Time: 55.64s
+早停触发，最佳验证损失在 epoch 51
+
+============================================================================
+训练完成
+============================================================================
+总耗时: 1.08 小时 (65.0 分钟)
+完成轮数: 51
+最佳验证损失: 5768.8221
+最终训练损失: 4656.0634
+最终验证损失: 5768.8221
+最佳模型: checkpoints/full_train/best_model.pth
+完成时间: 2026-09-04 00:12:28
+============================================================================
+
+验证训练效果:
+  python eval_after_train.py --checkpoint checkpoints/full_train/best_model.pth
