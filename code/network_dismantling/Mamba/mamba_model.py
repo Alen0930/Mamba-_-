@@ -106,7 +106,7 @@ class MambaDismantlingModel(nn.Module):
         return scores
 
 
-def create_mamba_model(device: str = 'cuda') -> MambaDismantlingModel:
+def create_mamba_model(device: str = 'cuda', input_dim: int = 4) -> MambaDismantlingModel:
     """
     创建并初始化 Mamba 拆解模型
 
@@ -114,6 +114,9 @@ def create_mamba_model(device: str = 'cuda') -> MambaDismantlingModel:
     ----------
     device : str
         设备 ('cuda' 或 'cpu')
+    input_dim : int
+        输入特征维度（默认 4：度、k-core、PageRank、接近中心性；
+        消融实验可用 1：仅度）
 
     Returns
     -------
@@ -121,7 +124,7 @@ def create_mamba_model(device: str = 'cuda') -> MambaDismantlingModel:
         初始化的模型实例
     """
     model = MambaDismantlingModel(
-        input_dim=4,
+        input_dim=input_dim,
         d_model=64,
         n_layers=2
     )

@@ -125,7 +125,8 @@ class DismantlingDataset(Dataset):
         self,
         graphs: List[nx.Graph],
         dismantler_fn: Callable[[nx.Graph], List[int]],
-        cache_features: bool = True
+        cache_features: bool = True,
+        feature_set: str = 'full'
     ):
         """
         Parameters
@@ -137,10 +138,13 @@ class DismantlingDataset(Dataset):
             例如: lambda G: dismantle(G, method='corehd')
         cache_features : bool
             是否缓存特征和标签（加速训练，但消耗内存）
+        feature_set : str
+            特征集合，默认 'full'（4 维）；消融实验传 'degree'（1 维）
         """
         self.graphs = graphs
         self.dismantler_fn = dismantler_fn
         self.cache_features = cache_features
+        self.feature_set = feature_set
 
         # 缓存
         self.cached_data = None
@@ -173,7 +177,7 @@ class DismantlingDataset(Dataset):
         G_std = self._standardize_graph(G)
 
         # 提取特征序列
-        features, node_ids = extract_node_features(G_std)
+        features, node_ids = extract_node_features(G_std, feature_set=self.feature_set)
 
         # 生成真实拆解序列（标准化节点ID）
         dismantling_seq = self.dismantler_fn(G_std)
@@ -236,9 +240,10 @@ def collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """
     max_len = max(sample['features'].size(0) for sample in batch)
     batch_size = len(batch)
+    feature_dim = batch[0]['features'].size(1)
 
     # 初始化 padded tensors
-    features_padded = torch.zeros(batch_size, max_len, 4)
+    features_padded = torch.zeros(batch_size, max_len, feature_dim)
     ranks_padded = torch.zeros(batch_size, max_len, dtype=torch.long)
     masks = torch.zeros(batch_size, max_len, dtype=torch.bool)
 

@@ -132,7 +132,8 @@ def mamba_dismantle(
     stop_condition: int = 1,
     device: str = None,
     model_path: Optional[str] = None,
-    weights: Optional[Dict[str, torch.Tensor]] = None
+    weights: Optional[Dict[str, torch.Tensor]] = None,
+    feature_set: str = 'full'
 ) -> List[int]:
     """
     使用 Mamba 模型进行网络拆解
@@ -149,6 +150,9 @@ def mamba_dismantle(
         检查点路径，显式指定训练权重（优先级最高）
     weights : Dict[str, torch.Tensor], optional
         直接传入 state_dict
+    feature_set : str
+        特征集合，默认 'full'（4 维）；须与模型 input_dim 一致，
+        消融实验 1 维模型传 'degree'
     Returns
     -------
     removal_sequence : List[int]
@@ -164,7 +168,7 @@ def mamba_dismantle(
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # 1. 提取节点特征
-    features, node_ids = extract_node_features(G)
+    features, node_ids = extract_node_features(G, feature_set=feature_set)
 
     # 2. 构建 Mamba 模型（自动加载可用权重）
     model = _build_scoring_model(device, model_path=model_path, weights=weights)

@@ -7,7 +7,7 @@ import networkx as nx
 from typing import Tuple, List
 
 
-def extract_node_features(G: nx.Graph) -> Tuple[np.ndarray, List[int]]:
+def extract_node_features(G: nx.Graph, feature_set: str = 'full') -> Tuple[np.ndarray, List[int]]:
     """
     将图转换为有序序列，提取节点拓扑特征
 
@@ -15,58 +15,67 @@ def extract_node_features(G: nx.Graph) -> Tuple[np.ndarray, List[int]]:
     ----------
     G : nx.Graph
         输入图（节点标签应为 0 到 n-1 的整数）
+    feature_set : str
+        特征集合，默认 'full'：
+        - 'full'  ：4 维特征 [度, k-core, PageRank, 接近中心性]
+        - 'degree'：1 维特征 [度]（消融实验用，O(n+m) 极低开销）
 
     Returns
     -------
     features : np.ndarray
-        归一化特征矩阵，形状 (n_nodes, 4)
-        每行对应一个节点的 4 项特征：[度, k-core, PageRank, 接近中心性]
+        归一化特征矩阵，形状 (n_nodes, input_dim)
+        每行对应一个节点的特征（input_dim 由 feature_set 决定）
     node_ids : List[int]
         对应的节点 ID 列表（按度降序排列）
     """
     n = G.number_of_nodes()
 
     if n == 0:
-        return np.zeros((0, 4)), []
+        dim = 1 if feature_set == 'degree' else 4
+        return np.zeros((0, dim)), []
 
     # 提取特征
-    # 1. 节点度
+    # 1. 节点度（所有 feature_set 共用）
     degree_dict = dict(G.degree())
     degrees = np.array([degree_dict.get(i, 0) for i in range(n)], dtype=np.float32)
 
-    # 2. k-core 值
-    core_dict = nx.core_number(G)
-    cores = np.array([core_dict.get(i, 0) for i in range(n)], dtype=np.float32)
+    if feature_set == 'degree':
+        # 消融实验：仅保留度特征，跳过 O(n²) 的中心性计算
+        features = degrees.reshape(-1, 1)
+    else:
+        # 2. k-core 值
+        core_dict = nx.core_number(G)
+        cores = np.array([core_dict.get(i, 0) for i in range(n)], dtype=np.float32)
 
-    # 3. PageRank 值
-    try:
-        pagerank_dict = nx.pagerank(G, max_iter=100)
-        pageranks = np.array([pagerank_dict.get(i, 0) for i in range(n)], dtype=np.float32)
-    except:
-        # 如果 PageRank 计算失败，使用度中心性作为替代
-        pageranks = degrees / (degrees.sum() + 1e-8)
+        # 3. PageRank 值
+        try:
+            pagerank_dict = nx.pagerank(G, max_iter=100)
+            pageranks = np.array([pagerank_dict.get(i, 0) for i in range(n)], dtype=np.float32)
+        except:
+            # 如果 PageRank 计算失败，使用度中心性作为替代
+            pageranks = degrees / (degrees.sum() + 1e-8)
 
-    # 4. 接近中心性
-    try:
-        # 对于大图，接近中心性计算可能很慢，这里只对连通分量计算
-        if nx.is_connected(G):
-            closeness_dict = nx.closeness_centrality(G)
-            closeness = np.array([closeness_dict.get(i, 0) for i in range(n)], dtype=np.float32)
-        else:
-            # 对于非连通图，分别计算各连通分量的接近中心性
-            closeness = np.zeros(n, dtype=np.float32)
-            for component in nx.connected_components(G):
-                if len(component) > 1:
-                    subgraph = G.subgraph(component)
-                    closeness_dict = nx.closeness_centrality(subgraph)
-                    for node in component:
-                        closeness[node] = closeness_dict[node]
-    except:
-        # 如果计算失败，使用度作为替代
-        closeness = degrees / (degrees.max() + 1e-8)
+        # 4. 接近中心性
+        try:
+            # 对于大图，接近中心性计算可能很慢，这里只对连通分量计算
+            if nx.is_connected(G):
+                closeness_dict = nx.closeness_centrality(G)
+                closeness = np.array([closeness_dict.get(i, 0) for i in range(n)], dtype=np.float32)
+            else:
+                # 对于非连通图，分别计算各连通分量的接近中心性
+                closeness = np.zeros(n, dtype=np.float32)
+                for component in nx.connected_components(G):
+                    if len(component) > 1:
+                        subgraph = G.subgraph(component)
+                        closeness_dict = nx.closeness_centrality(subgraph)
+                        for node in component:
+                            closeness[node] = closeness_dict[node]
+        except:
+            # 如果计算失败，使用度作为替代
+            closeness = degrees / (degrees.max() + 1e-8)
 
-    # 构建特征矩阵
-    features = np.stack([degrees, cores, pageranks, closeness], axis=1)
+        # 构建特征矩阵
+        features = np.stack([degrees, cores, pageranks, closeness], axis=1)
 
     # 按度降序排列
     sorted_indices = np.argsort(degrees)[::-1]

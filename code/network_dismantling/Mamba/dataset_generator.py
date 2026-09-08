@@ -115,6 +115,7 @@ def build_datasets(
     seed: Optional[int] = None,
     label_method: str = DEFAULT_LABEL_METHOD,
     cache_features: bool = True,
+    feature_set: str = 'full',
 ) -> Tuple[DismantlingDataset, DismantlingDataset]:
     """
     构建训练/验证 DismantlingDataset，按 split_ratio 划分（默认 8:2）
@@ -134,6 +135,8 @@ def build_datasets(
         监督信号算法名（unified_interface 注册名），默认 'CoreHD'
     cache_features : bool
         是否缓存特征与标签（推荐 True，加速训练）
+    feature_set : str
+        特征集合，默认 'full'（4 维）；消融实验传 'degree'（1 维）
 
     Returns
     -------
@@ -156,19 +159,21 @@ def build_datasets(
     dismantler_fn = lambda G: dismantle(G, method=label_method, stop_condition=1)
 
     logger.info(
-        "Building datasets: %d graphs -> %d train / %d val (label=%s)",
-        len(graphs), len(train_idx), len(val_idx), label_method,
+        "Building datasets: %d graphs -> %d train / %d val (label=%s, feature_set=%s)",
+        len(graphs), len(train_idx), len(val_idx), label_method, feature_set,
     )
 
     train_dataset = DismantlingDataset(
         [graphs[i] for i in train_idx],
         dismantler_fn=dismantler_fn,
         cache_features=cache_features,
+        feature_set=feature_set,
     )
     val_dataset = DismantlingDataset(
         [graphs[i] for i in val_idx],
         dismantler_fn=dismantler_fn,
         cache_features=cache_features,
+        feature_set=feature_set,
     )
 
     return train_dataset, val_dataset
@@ -303,6 +308,7 @@ def generate_and_save_datasets(
     split_ratio: float = DEFAULT_SPLIT_RATIO,
     seed: Optional[int] = None,
     label_method: str = DEFAULT_LABEL_METHOD,
+    feature_set: str = 'full',
 ) -> Tuple[DismantlingDataset, DismantlingDataset]:
     """
     一键生成 BA 数据集（CoreHD 标签）并保存到本地
@@ -323,6 +329,8 @@ def generate_and_save_datasets(
         随机种子（图生成与划分共用）
     label_method : str
         监督信号算法名，默认 'CoreHD'
+    feature_set : str
+        特征集合，默认 'full'（4 维）；消融实验传 'degree'（1 维）
 
     Returns
     -------
@@ -335,7 +343,8 @@ def generate_and_save_datasets(
 
     print(f"Step 2/4: Generating {label_method} labels and building datasets...")
     train_dataset, val_dataset = build_datasets(
-        graphs, split_ratio=split_ratio, seed=seed, label_method=label_method
+        graphs, split_ratio=split_ratio, seed=seed, label_method=label_method,
+        feature_set=feature_set,
     )
 
     print(f"Step 3/4: Saving datasets to {out_dir} ...")
@@ -345,6 +354,7 @@ def generate_and_save_datasets(
         "seed": seed,
         "n_range": list(n_range),
         "m_range": list(m_range),
+        "feature_set": feature_set,
     }
     save_datasets(train_dataset, val_dataset, out_dir, extra_meta=meta)
 
