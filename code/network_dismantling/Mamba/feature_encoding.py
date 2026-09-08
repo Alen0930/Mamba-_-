@@ -7,7 +7,10 @@ import networkx as nx
 from typing import Tuple, List
 
 
-def extract_node_features(G: nx.Graph, feature_set: str = 'full') -> Tuple[np.ndarray, List[int]]:
+def extract_node_features(
+    G: nx.Graph,
+    feature_set: str = "all",
+) -> Tuple[np.ndarray, List[int]]:
     """
     将图转换为有序序列，提取节点拓扑特征
 
@@ -16,31 +19,31 @@ def extract_node_features(G: nx.Graph, feature_set: str = 'full') -> Tuple[np.nd
     G : nx.Graph
         输入图（节点标签应为 0 到 n-1 的整数）
     feature_set : str
-        特征集合，默认 'full'：
-        - 'full'  ：4 维特征 [度, k-core, PageRank, 接近中心性]
-        - 'degree'：1 维特征 [度]（消融实验用，O(n+m) 极低开销）
+        特征集选择：
+        - 'all'    : [度, k-core, PageRank, 接近中心性]（4 维，默认）
+        - 'degree' : 仅节点度（1 维，用于消融实验，避免 O(n^2) 中心性计算）
 
     Returns
     -------
     features : np.ndarray
-        归一化特征矩阵，形状 (n_nodes, input_dim)
-        每行对应一个节点的特征（input_dim 由 feature_set 决定）
+        归一化特征矩阵，形状 (n_nodes, D)，D 由 feature_set 决定（1 或 4）
+        每行对应一个节点的特征
     node_ids : List[int]
         对应的节点 ID 列表（按度降序排列）
     """
     n = G.number_of_nodes()
 
+    n_feat = 1 if feature_set == "degree" else 4
     if n == 0:
-        dim = 1 if feature_set == 'degree' else 4
-        return np.zeros((0, dim)), []
+        return np.zeros((0, n_feat)), []
 
     # 提取特征
-    # 1. 节点度（所有 feature_set 共用）
+    # 1. 节点度（无论 feature_set 为何值都需要，用于排序）
     degree_dict = dict(G.degree())
     degrees = np.array([degree_dict.get(i, 0) for i in range(n)], dtype=np.float32)
 
-    if feature_set == 'degree':
-        # 消融实验：仅保留度特征，跳过 O(n²) 的中心性计算
+    if feature_set == "degree":
+        # 仅度特征，跳过中心性计算（O(m) 复杂度）
         features = degrees.reshape(-1, 1)
     else:
         # 2. k-core 值

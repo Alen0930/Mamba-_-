@@ -126,7 +126,7 @@ class DismantlingDataset(Dataset):
         graphs: List[nx.Graph],
         dismantler_fn: Callable[[nx.Graph], List[int]],
         cache_features: bool = True,
-        feature_set: str = 'full'
+        feature_set: str = "all"
     ):
         """
         Parameters
@@ -139,7 +139,8 @@ class DismantlingDataset(Dataset):
         cache_features : bool
             是否缓存特征和标签（加速训练，但消耗内存）
         feature_set : str
-            特征集合，默认 'full'（4 维）；消融实验传 'degree'（1 维）
+            特征集选择，透传给 extract_node_features：'all' | 'degree'
+            （'degree' 用于消融实验，仅用节点度作为输入特征）
         """
         self.graphs = graphs
         self.dismantler_fn = dismantler_fn
@@ -179,6 +180,10 @@ class DismantlingDataset(Dataset):
         # 提取特征序列
         features, node_ids = extract_node_features(G_std, feature_set=self.feature_set)
 
+        # 提取邻接矩阵（与特征序列同一节点顺序，供 GNN 使用）
+        adj = nx.to_numpy_array(G_std, dtype=np.uint8)
+        adj_reordered = adj[np.ix_(node_ids, node_ids)]
+
         # 生成真实拆解序列（标准化节点ID）
         dismantling_seq = self.dismantler_fn(G_std)
 
@@ -198,6 +203,7 @@ class DismantlingDataset(Dataset):
         return {
             'features': features.astype(np.float32),
             'node_ids': np.array(node_ids, dtype=np.int64),
+            'adj': adj_reordered.astype(np.float32),
             'ranks': ranks_reordered.astype(np.int64)
         }
 
@@ -224,40 +230,61 @@ class DismantlingDataset(Dataset):
         else:
             sample = self._process_graph(self.graphs[idx])
 
+        features = sample['features']
+
+        # feature_set 切片：若缓存的是 4 维特征但只需 degree（第 0 列），取子集
+        # （degree 列已独立 min-max 归一化，与 extract_node_features(feature_set='degree') 结果一致）
+        if self.feature_set == "degree" and features.shape[1] == 4:
+            features = features[:, :1]
+
         # 转换为 Tensor
-        return {
-            'features': torch.from_numpy(sample['features']),
+        result = {
+            'features': torch.from_numpy(features),
             'node_ids': torch.from_numpy(sample['node_ids']),
             'ranks': torch.from_numpy(sample['ranks'])
         }
+
+        # 邻接矩阵（GNN 需要；旧缓存数据集无此字段时跳过，兼容旧模型）
+        if 'adj' in sample:
+            result['adj'] = torch.from_numpy(sample['adj'])
+
+        return result
 
 
 def collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """
     自定义 collate 函数，处理不同长度的序列
 
-    使用 padding 将序列对齐到 batch 中的最大长度
+    使用 padding 将序列对齐到 batch 中的最大长度。
+    特征维度从 batch 中动态读取，兼容 input_dim=1（degree-only）与 input_dim=4（all）。
     """
     max_len = max(sample['features'].size(0) for sample in batch)
     batch_size = len(batch)
-    feature_dim = batch[0]['features'].size(1)
+    feat_dim = batch[0]['features'].size(1)
+    has_adj = 'adj' in batch[0]
 
     # 初始化 padded tensors
-    features_padded = torch.zeros(batch_size, max_len, feature_dim)
+    features_padded = torch.zeros(batch_size, max_len, feat_dim)
     ranks_padded = torch.zeros(batch_size, max_len, dtype=torch.long)
     masks = torch.zeros(batch_size, max_len, dtype=torch.bool)
+    adj_padded = torch.zeros(batch_size, max_len, max_len) if has_adj else None
 
     for i, sample in enumerate(batch):
         seq_len = sample['features'].size(0)
         features_padded[i, :seq_len] = sample['features']
         ranks_padded[i, :seq_len] = sample['ranks']
         masks[i, :seq_len] = 1
+        if has_adj:
+            adj_padded[i, :seq_len, :seq_len] = sample['adj']
 
-    return {
+    result = {
         'features': features_padded,
         'ranks': ranks_padded,
         'mask': masks
     }
+    if has_adj:
+        result['adj'] = adj_padded
+    return result
 
 
 # ============================================================================
@@ -335,8 +362,12 @@ class MambaTrainer:
             ranks = batch['ranks'].to(self.device)
             mask = batch['mask'].to(self.device)
 
-            # 前向传播（单次）
-            pred_scores = self.model(features)  # (batch_size, seq_len)
+            # 前向传播（单次）：GNN 模型需额外传入邻接矩阵
+            if 'adj' in batch:
+                adj = batch['adj'].to(self.device)
+                pred_scores = self.model(features, adj, mask=mask)
+            else:
+                pred_scores = self.model(features)  # (batch_size, seq_len)
 
             # 向量化 ListMLE 损失（padding 位置由 mask 屏蔽）
             loss = self.criterion(pred_scores, ranks, mask=mask)
@@ -375,7 +406,11 @@ class MambaTrainer:
             ranks = batch['ranks'].to(self.device)
             mask = batch['mask'].to(self.device)
 
-            pred_scores = self.model(features)
+            if 'adj' in batch:
+                adj = batch['adj'].to(self.device)
+                pred_scores = self.model(features, adj, mask=mask)
+            else:
+                pred_scores = self.model(features)
 
             loss = self.criterion(pred_scores, ranks, mask=mask)
 
@@ -391,7 +426,8 @@ class MambaTrainer:
         val_loader: Optional[DataLoader] = None,
         num_epochs: int = 100,
         patience: int = 10,
-        verbose: bool = True
+        verbose: bool = True,
+        start_epoch: Optional[int] = None,
     ) -> Dict[str, List[float]]:
         """
         完整训练流程
@@ -417,7 +453,8 @@ class MambaTrainer:
         best_epoch = 0
         patience_counter = 0
 
-        for epoch in range(num_epochs):
+        start = start_epoch if start_epoch is not None else 0
+        for epoch in range(start, num_epochs):
             self.current_epoch = epoch
             start_time = time.time()
 
@@ -480,11 +517,7 @@ class MambaTrainer:
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'best_val_loss': self.best_val_loss,
-            'model_config': {
-                'input_dim': self.model.input_dim,
-                'd_model': self.model.d_model,
-                'n_layers': self.model.n_layers
-            }
+            'model_config': self.model.get_config()
         }
 
         save_path = self.checkpoint_dir / filename
@@ -493,7 +526,10 @@ class MambaTrainer:
 
     def load_checkpoint(self, filename: str):
         """加载模型检查点"""
-        load_path = self.checkpoint_dir / filename
+        # 兼容两种用法：完整路径（存在则直接用）或 checkpoint_dir 下的文件名
+        load_path = Path(filename)
+        if not load_path.exists():
+            load_path = self.checkpoint_dir / filename
         if not load_path.exists():
             raise FileNotFoundError(f"检查点不存在: {load_path}")
 

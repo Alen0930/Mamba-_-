@@ -61,6 +61,14 @@ class MambaDismantlingModel(nn.Module):
         # 初始化权重
         self._init_weights()
 
+    def get_config(self) -> dict:
+        """返回模型配置，用于 checkpoint 保存与重建"""
+        return {
+            'input_dim': self.input_dim,
+            'd_model': self.d_model,
+            'n_layers': self.n_layers,
+        }
+
     def _init_weights(self):
         """随机初始化权重"""
         nn.init.xavier_uniform_(self.input_proj.weight)
@@ -106,7 +114,7 @@ class MambaDismantlingModel(nn.Module):
         return scores
 
 
-def create_mamba_model(device: str = 'cuda', input_dim: int = 4) -> MambaDismantlingModel:
+def create_mamba_model(device: str = 'cuda') -> MambaDismantlingModel:
     """
     创建并初始化 Mamba 拆解模型
 
@@ -114,9 +122,6 @@ def create_mamba_model(device: str = 'cuda', input_dim: int = 4) -> MambaDismant
     ----------
     device : str
         设备 ('cuda' 或 'cpu')
-    input_dim : int
-        输入特征维度（默认 4：度、k-core、PageRank、接近中心性；
-        消融实验可用 1：仅度）
 
     Returns
     -------
@@ -124,7 +129,7 @@ def create_mamba_model(device: str = 'cuda', input_dim: int = 4) -> MambaDismant
         初始化的模型实例
     """
     model = MambaDismantlingModel(
-        input_dim=input_dim,
+        input_dim=4,
         d_model=64,
         n_layers=2
     )

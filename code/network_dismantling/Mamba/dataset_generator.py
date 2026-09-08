@@ -115,7 +115,7 @@ def build_datasets(
     seed: Optional[int] = None,
     label_method: str = DEFAULT_LABEL_METHOD,
     cache_features: bool = True,
-    feature_set: str = 'full',
+    feature_set: str = "all",
 ) -> Tuple[DismantlingDataset, DismantlingDataset]:
     """
     构建训练/验证 DismantlingDataset，按 split_ratio 划分（默认 8:2）
@@ -136,7 +136,7 @@ def build_datasets(
     cache_features : bool
         是否缓存特征与标签（推荐 True，加速训练）
     feature_set : str
-        特征集合，默认 'full'（4 维）；消融实验传 'degree'（1 维）
+        特征集选择 'all' | 'degree'（'degree' 用于消融实验）
 
     Returns
     -------
@@ -206,11 +206,12 @@ def save_dataset(dataset: DismantlingDataset, path, extra_meta: Optional[Dict] =
     return str(path)
 
 
-def load_dataset(path) -> DismantlingDataset:
+def load_dataset(path, feature_set: str = "all") -> DismantlingDataset:
     """
     从本地文件加载数据集
 
     加载时直接使用缓存的特征/标签，不重新运行标签生成算法。
+    feature_set='degree' 时，在取样本阶段对缓存特征取 degree 子集（复用缓存，无需重新生成）。
     """
     path = Path(path)
     if not path.exists():
@@ -223,11 +224,13 @@ def load_dataset(path) -> DismantlingDataset:
         raise ValueError(f"不支持的数据集版本: {data.get('version')}")
 
     # 重建 DismantlingDataset：不触发预处理，直接填充缓存
-    dataset = DismantlingDataset(data["graphs"], dismantler_fn=None, cache_features=False)
+    dataset = DismantlingDataset(
+        data["graphs"], dismantler_fn=None, cache_features=False, feature_set=feature_set
+    )
     dataset.cached_data = data["cached_data"]
     dataset.cache_features = True
 
-    logger.info("Dataset loaded: %s (%d samples)", path, len(dataset))
+    logger.info("Dataset loaded: %s (%d samples, feature_set=%s)", path, len(dataset), feature_set)
     return dataset
 
 
@@ -250,11 +253,11 @@ def save_datasets(
     return str(out_dir)
 
 
-def load_datasets(out_dir) -> Tuple[DismantlingDataset, DismantlingDataset]:
+def load_datasets(out_dir, feature_set: str = "all") -> Tuple[DismantlingDataset, DismantlingDataset]:
     """从指定目录加载训练/验证数据集"""
     out_dir = Path(out_dir)
-    train_dataset = load_dataset(out_dir / TRAIN_FILE)
-    val_dataset = load_dataset(out_dir / VAL_FILE)
+    train_dataset = load_dataset(out_dir / TRAIN_FILE, feature_set=feature_set)
+    val_dataset = load_dataset(out_dir / VAL_FILE, feature_set=feature_set)
     return train_dataset, val_dataset
 
 
@@ -308,7 +311,6 @@ def generate_and_save_datasets(
     split_ratio: float = DEFAULT_SPLIT_RATIO,
     seed: Optional[int] = None,
     label_method: str = DEFAULT_LABEL_METHOD,
-    feature_set: str = 'full',
 ) -> Tuple[DismantlingDataset, DismantlingDataset]:
     """
     一键生成 BA 数据集（CoreHD 标签）并保存到本地
@@ -329,8 +331,6 @@ def generate_and_save_datasets(
         随机种子（图生成与划分共用）
     label_method : str
         监督信号算法名，默认 'CoreHD'
-    feature_set : str
-        特征集合，默认 'full'（4 维）；消融实验传 'degree'（1 维）
 
     Returns
     -------
@@ -343,8 +343,7 @@ def generate_and_save_datasets(
 
     print(f"Step 2/4: Generating {label_method} labels and building datasets...")
     train_dataset, val_dataset = build_datasets(
-        graphs, split_ratio=split_ratio, seed=seed, label_method=label_method,
-        feature_set=feature_set,
+        graphs, split_ratio=split_ratio, seed=seed, label_method=label_method
     )
 
     print(f"Step 3/4: Saving datasets to {out_dir} ...")
@@ -354,7 +353,6 @@ def generate_and_save_datasets(
         "seed": seed,
         "n_range": list(n_range),
         "m_range": list(m_range),
-        "feature_set": feature_set,
     }
     save_datasets(train_dataset, val_dataset, out_dir, extra_meta=meta)
 

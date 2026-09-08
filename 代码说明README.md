@@ -1,8 +1,20 @@
 # Mamba 网络拆解 —— 阶段性成果交付说明
 
-基于状态空间模型（Mamba）的网络拆解算法完整实现：包含图特征编码、Mamba 优先级评分模型、ListMLE 排序损失训练引擎、统一接口对接与训练后效果评测。
+基于状态空间模型（Mamba）的网络拆解算法完整实现：从 GNN+双向 Mamba 动态重算，到 RL(PPO) 强化学习微调，突破「拟合 CoreHD 标签」的行为克隆上界。
 
-**核心成果**：在 1000 节点独立测试网络上，训练后的 Mamba 拆解效果（Stop 步数 261）超越 degree（276）、pagerank（267）两个经典基线，逼近 CoreHD（238），瓦解阈值 FC 值（0.377）为所有对比方法中最优。
+**核心成果**（n=500/1000/1500，各 3 seeds，9 图平均）：
+
+| 方法 | 平均 stop_step | 平均 fc_value |
+|---|---|---|
+| degree | 270.0 | 0.3799 |
+| CoreHD（动态上界） | 224.1 | 0.3995 |
+| gnn-dyn-b25（监督） | 252.3 | 0.3406 |
+| **rl-greedy（RL 微调）** | **239.8** | **0.3079** |
+
+- **fc_value（LCC≤1% 彻底瓦解，更严格指标）：RL 大幅超越 CoreHD 23%**（0.3079 vs 0.3995），也超监督模型 9.6%。
+- stop_step（LCC≤10%）：RL 逼近 CoreHD（差 7%），明显优于监督模型与 degree。
+
+> 完整四阶段研究过程（消融 → GNN 重构 → 动态重算 → RL）见同目录 `阶段性成果.md`。
 
 ---
 
@@ -10,31 +22,43 @@
 
 ```
 Mamba 网络拆解_阶段性成果/
+├── 阶段性成果.md                  ← 四阶段完整研究过程与结果（消融→GNN→动态重算→RL）
 ├── 代码说明README.md              ← 本文件
 ├── code/                          ← 项目根目录（所有命令在此目录下执行）
 │   ├── network_dismantling/       ← 完整代码包
 │   │   ├── unified_interface.py   ← 统一拆解接口（含【Mamba 对接-修改部分】标注）
 │   │   ├── Mamba/                 ← Mamba 模块（本项目核心新增）
-│   │   │   ├── __init__.py        ← 模块导出
-│   │   │   ├── feature_encoding.py   ← 节点特征编码（4 维拓扑特征）
-│   │   │   ├── mamba_model.py     ← Mamba 评分模型（2 层 SSM）
-│   │   │   ├── mamba_dismantler.py   ← 拆解主逻辑（含训练权重加载）
-│   │   │   ├── trainer.py         ← 训练引擎（ListMLE 损失 + 数据集 + 训练器）
-│   │   │   ├── dataset_generator.py  ← BA 数据集批量生成器
-│   │   │   ├── model_io.py        ← 模型权重管理工具
-│   │   │   └── *.md               ← 模块文档
+│   │   │   ├── feature_encoding.py      ← 节点特征编码（degree 输入）
+│   │   │   ├── mamba_model.py           ← 纯 Mamba 评分模型（2 层 SSM）
+│   │   │   ├── gnn_mamba_model.py       ← GCN 编码器 + 双向 Mamba（encode/forward 分离）
+│   │   │   ├── gnn_mamba_actor_critic.py ← Actor-Critic（复用编码器 + value_head）
+│   │   │   ├── rl_env.py                ← RL 环境与 rollout 采样（批动作 + potential reward）
+│   │   │   ├── ppo_trainer.py           ← PPO 训练器（GAE / REINFORCE / per-step potential）
+│   │   │   ├── mamba_dismantler.py      ← 拆解主逻辑（含动态重算 batch_size 参数）
+│   │   │   ├── trainer.py               ← 监督训练引擎（ListMLE 损失）
+│   │   │   ├── dataset_generator.py     ← BA 数据集批量生成器
+│   │   │   ├── model_io.py              ← 模型权重管理工具
+│   │   │   └── *.md                     ← 模块文档
 │   │   └── （heuristics / CoreHD / GND / EI / CI 等原有方法）
-│   ├── run_full_train.py          ← 正式训练脚本（复现命令②）
-│   ├── eval_after_train.py        ← 训练后效果评测脚本（复现命令③）
-│   ├── train_mamba_example.py     ← 训练示例脚本
-│   └── evaluate.py                ← 评测工具（calc_metrics / plot_robustness）
+│   ├── run_ablation_train.py     ← 消融实验训练
+│   ├── run_full_train.py         ← 纯 Mamba 训练（复现命令②）
+│   ├── run_gnn_train.py          ← GNN+双向 Mamba 训练
+│   ├── run_rl_train.py           ← RL(PPO) 训练（复现命令④）
+│   ├── prepare_gnn_dataset.py    ← GNN 数据集准备
+│   ├── eval_after_train.py       ← 训练后效果评测
+│   ├── eval_dynamic.py           ← 动态重算评测
+│   ├── eval_rl.py                ← RL 正式评测（复现命令⑤）
+│   ├── train_mamba_example.py    ← 训练示例脚本
+│   └── evaluate.py               ← 评测工具（calc_metrics / plot_robustness）
 ├── results/
-│   ├── 指标对比表.txt             ← 五种方法完整评测数据
-│   ├── 鲁棒性对比曲线.png         ← 五种方法鲁棒性对比曲线图
-│   └── 训练日志.txt               ← 本次正式训练完整日志
+│   ├── rl_eval.csv               ← RL 正式评测数据（n=500/1000/1500）
+│   ├── dynamic_eval*.csv         ← 动态重算评测数据
+│   ├── ablation*.csv             ← 消融实验数据
+│   └── 指标对比表.txt / 鲁棒性对比曲线.png / 训练日志.txt
 └── checkpoints/
-    └── full_train/
-        └── best_model.pth         ← 训练完成的最佳模型权重
+    ├── full_train/best_model.pth           ← 纯 Mamba 训练权重
+    ├── gnn_mamba/best_model.pth            ← 监督预训练权重（RL 初始策略）
+    └── gnn_mamba_rl500v4/best_model.pth    ← RL 微调最终权重
 ```
 
 > 说明：`code/` 目录即项目根目录，Python 包名保持 `network_dismantling` 不变，
@@ -145,6 +169,46 @@ python eval_after_train.py \
   （`--output` 为相对 `code/` 的路径，即保存到 `code/results/` 下）
 - 本次实验的完整评测数据见 `../results/指标对比表.txt`
 
+### 命令④：GNN+双向 Mamba 监督训练
+
+```bash
+python run_gnn_train.py \
+    --dataset-dir datasets/ba_corehd_full \
+    --epochs 100 --batch-size 8 \
+    --checkpoint-dir checkpoints/gnn_mamba
+```
+
+- GCN 编码器（dense 邻接矩阵消息传递）+ 双向 Mamba，输入只用 degree
+- 最佳模型保存到 `checkpoints/gnn_mamba/best_model.pth`（同时作为 RL 初始策略）
+
+### 命令⑤：RL(PPO) 微调训练（突破行为克隆上界）
+
+```bash
+python run_rl_train.py \
+    --ckpt checkpoints/gnn_mamba/best_model.pth \
+    --n 500 --action-k 10 --num-envs 4 --iterations 100 \
+    --eval-interval 20 --eval-sizes 500 --eval-seeds 3 \
+    --lr 2e-4 --ent-coef 0.001 \
+    --out-dir checkpoints/gnn_mamba_rl500v4
+```
+
+- 在监督预训练模型之上，用 per-step potential advantage（`(LCC_before-LCC_after)/n0`）
+  做 PPO 策略梯度微调，reward 换成「每步 LCC 下降 / 拆解集大小」
+- 最佳模型保存到 `checkpoints/gnn_mamba_rl500v4/best_model.pth`
+- 训练全程 fc 单调下降、无退化（advantage 设计的三次迭代见 `阶段性成果.md` 第五节）
+
+### 命令⑥：RL 正式评测（n=500/1000/1500）
+
+```bash
+python eval_rl.py \
+    --ckpt checkpoints/gnn_mamba_rl500v4/best_model.pth \
+    --gnn-ckpt checkpoints/gnn_mamba/best_model.pth \
+    --n-sizes 500,1000,1500 --seeds-per-size 3
+```
+
+- 对比 degree / CoreHD / gnn-dyn-b25（监督）/ rl-greedy（RL）四种方法
+- 结果保存到 `results/rl_eval.csv`，核心结论见 README 顶部表格
+
 ---
 
 ## 四、接口使用方式
@@ -234,6 +298,18 @@ plot_robustness(
 4. **模型具备跨网络泛化能力**：测试网络（seed=2026）与训练集（随机生成、无固定种子）
    完全独立，效果无退化，证明学习到的是通用拓扑拆解规律而非记忆特定网络。
 
+### 5.5 后续进展：GNN 重构 → 动态重算 → RL 突破
+
+纯 Mamba（阶段 A/B）之后，项目进一步推进了三个阶段（详见 `阶段性成果.md`）：
+
+1. **GNN + 双向 Mamba 重构**：新增 GCN 编码器（真正用上邻接矩阵），输入只用 degree。
+2. **动态重算**：每移除 b 个节点在剩余子图上重算分数，stop_step 269.9→252.3（改善 6.5%），
+   fc_value 反超 CoreHD。
+3. **RL(PPO) 突破行为克隆上界**：监督预训练模型作初始策略，PPO 用真实拆解 reward 微调。
+   经三次 advantage 设计迭代（critic/GAE 与 REINFORCE 均退化），最终采用
+   per-step potential advantage。成果：**fc_value 大幅超越 CoreHD 23%**，
+   stop_step 逼近 CoreHD（差 7%），完整数据见 README 顶部表格与 `results/rl_eval.csv`。
+
 ---
 
-*交付日期：2026-09-06｜ 项目：Mamba 网络拆解（网络拆解算法研究课题组）*
+*交付日期：2026-09-08｜ 项目：Mamba 网络拆解（网络拆解算法研究课题组）*

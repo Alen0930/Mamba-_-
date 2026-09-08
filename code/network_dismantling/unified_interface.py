@@ -404,19 +404,10 @@ def _gdm_reinsertion_dismantler(G: nx.Graph, stop_condition: int, **kwargs) -> L
     return _fill_remaining(G, seq)
 
 
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║  【Mamba 对接 - 修改部分】                                             ║
-# ║  以下为本项目新增内容：将 Mamba 方法注册到统一拆解接口                  ║
-# ║  - 新增 import: network_dismantling.Mamba.mamba_dismantler            ║
-# ║  - 新增 @register_method("mamba") 注册函数                            ║
-# ║  - 支持 kwargs: device（计算设备）、model_path（训练权重检查点）         ║
-# ║  调用方式与 degree / CoreHD 等方法完全一致:                             ║
-# ║      dismantle(G, method='mamba')                                     ║
-# ╚══════════════════════════════════════════════════════════════════════╝
 # ---------------------------------------------------------------------------
 # Mamba (基于 mamba_ssm 的序列模型)
 # ---------------------------------------------------------------------------
-from network_dismantling.Mamba.mamba_dismantler import mamba_dismantle
+from network_dismantling.Mamba.mamba_dismantler import mamba_dismantle, gnn_mamba_dismantle
 
 
 @register_method("mamba")
@@ -434,5 +425,25 @@ def _mamba_dismantler(G: nx.Graph, stop_condition: int, **kwargs) -> List[int]:
         stop_condition=stop_condition,
         device=device,
         model_path=kwargs.get("model_path"),
+    )
+    return _fill_remaining(G, seq)
+
+
+@register_method("mamba_gnn")
+def _mamba_gnn_dismantler(G: nx.Graph, stop_condition: int, **kwargs) -> List[int]:
+    """
+    GNN + 双向 Mamba 网络拆解算法（阶段 B）。
+    输入特征只用 degree，图结构通过邻接矩阵做 GNN 消息传递。
+    可通过 kwargs 传入:
+    - device: 计算设备 ('cuda' 或 'cpu')
+    - model_path: 训练好的检查点路径
+    """
+    device = kwargs.get("device", "cuda" if __import__("torch").cuda.is_available() else "cpu")
+    seq = gnn_mamba_dismantle(
+        G,
+        stop_condition=stop_condition,
+        device=device,
+        model_path=kwargs.get("model_path"),
+        batch_size=kwargs.get("batch_size"),
     )
     return _fill_remaining(G, seq)

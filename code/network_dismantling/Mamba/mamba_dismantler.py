@@ -14,6 +14,7 @@ from typing import List, Dict, Optional
 
 from .feature_encoding import extract_node_features
 from .mamba_model import MambaDismantlingModel, create_mamba_model
+from .gnn_mamba_model import GNNMambaModel, create_gnn_mamba_model
 
 # ---------------------------------------------------------------------------
 # 全局训练权重注册（由 model_io.register_model_for_inference 设置）
@@ -132,8 +133,7 @@ def mamba_dismantle(
     stop_condition: int = 1,
     device: str = None,
     model_path: Optional[str] = None,
-    weights: Optional[Dict[str, torch.Tensor]] = None,
-    feature_set: str = 'full'
+    weights: Optional[Dict[str, torch.Tensor]] = None
 ) -> List[int]:
     """
     使用 Mamba 模型进行网络拆解
@@ -150,9 +150,6 @@ def mamba_dismantle(
         检查点路径，显式指定训练权重（优先级最高）
     weights : Dict[str, torch.Tensor], optional
         直接传入 state_dict
-    feature_set : str
-        特征集合，默认 'full'（4 维）；须与模型 input_dim 一致，
-        消融实验 1 维模型传 'degree'
     Returns
     -------
     removal_sequence : List[int]
@@ -167,24 +164,28 @@ def mamba_dismantle(
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # 1. 提取节点特征
-    features, node_ids = extract_node_features(G, feature_set=feature_set)
-
-    # 2. 构建 Mamba 模型（自动加载可用权重）
+    # 1. 构建 Mamba 模型（自动加载可用权重）
     model = _build_scoring_model(device, model_path=model_path, weights=weights)
 
-    # 3. 将特征转换为张量并推理
+    # 2. 依据模型输入维度选择特征集
+    #    input_dim=1 -> 仅度特征（degree-only 消融）；否则 -> 全特征（4 维）
+    feature_set = 'degree' if getattr(model, 'input_dim', None) == 1 else 'all'
+
+    # 3. 提取节点特征
+    features, node_ids = extract_node_features(G, feature_set=feature_set)
+
+    # 4. 将特征转换为张量并推理
     with torch.no_grad():
         features_tensor = torch.from_numpy(features).float().to(device)
         scores = model(features_tensor)  # (n_nodes,)
         scores = scores.cpu().numpy()
 
-    # 4. 构建节点到分数的映射（原始节点ID -> 优先级分数）
+    # 5. 构建节点到分数的映射（原始节点ID -> 优先级分数）
     node_scores = np.zeros(n, dtype=np.float32)
     for i, node_id in enumerate(node_ids):
         node_scores[node_id] = scores[i]
 
-    # 5. 渐进式拆解：按分数从高到低移除节点
+    # 6. 渐进式拆解：按分数从高到低移除节点
     G_tmp = G.copy()
     removal_sequence = []
 
@@ -206,5 +207,164 @@ def mamba_dismantle(
                 break
         else:
             break
+
+    return removal_sequence
+
+
+# ---------------------------------------------------------------------------
+# GNN + 双向 Mamba 推理（阶段 B）
+# ---------------------------------------------------------------------------
+def _load_gnn_checkpoint_model(checkpoint_path: str, device: str) -> GNNMambaModel:
+    """从检查点构建 GNN + 双向 Mamba 推理模型"""
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+        config = checkpoint.get('model_config')
+    else:
+        state_dict = checkpoint
+        config = None
+
+    if config:
+        model = GNNMambaModel(**config)
+    else:
+        model = create_gnn_mamba_model(device=device)
+
+    model.load_state_dict(state_dict)
+    model = model.to(device)
+    model.eval()
+    return model
+
+
+def _build_gnn_scoring_model(
+    device: str,
+    model_path: Optional[str] = None,
+    weights: Optional[Dict[str, torch.Tensor]] = None
+) -> GNNMambaModel:
+    """按优先级构建 GNN 评分模型并加载可用权重"""
+    if model_path is not None:
+        return _load_gnn_checkpoint_model(model_path, device)
+
+    if weights is not None:
+        model = create_gnn_mamba_model(device=device)
+        model.load_state_dict(weights)
+        model.eval()
+        return model
+
+    return create_gnn_mamba_model(device=device)
+
+
+def _gnn_score_subgraph(G_std: nx.Graph, model: GNNMambaModel, device: str):
+    """在标准化子图（节点 0..n-1）上计算 GNN 分数，返回 (node_ids, scores)"""
+    features, node_ids = extract_node_features(G_std, feature_set='degree')  # (n, 1)
+    adj = nx.to_numpy_array(G_std, dtype=np.uint8)                            # (n, n)
+    adj = adj[np.ix_(node_ids, node_ids)]
+    with torch.no_grad():
+        x = torch.from_numpy(features).float().to(device).unsqueeze(0)
+        a = torch.from_numpy(adj).float().to(device).unsqueeze(0)
+        scores = model(x, a).squeeze(0).cpu().numpy()
+    return node_ids, scores
+
+
+def _progressive_remove(G_tmp, score_map, stop_condition, removal_sequence):
+    """按 score_map 静态移除节点直到停止条件，原地更新 removal_sequence 并返回"""
+    while G_tmp.number_of_nodes() > 0:
+        remaining = list(G_tmp.nodes())
+        if not remaining:
+            break
+        best = max(remaining, key=lambda v: score_map[v])
+        removal_sequence.append(best)
+        G_tmp.remove_node(best)
+        if G_tmp.number_of_nodes() > 0:
+            lcc = max(len(c) for c in nx.connected_components(G_tmp))
+            if lcc <= stop_condition:
+                break
+    return removal_sequence
+
+
+def gnn_mamba_dismantle(
+    G: nx.Graph,
+    stop_condition: int = 1,
+    device: str = None,
+    model_path: Optional[str] = None,
+    weights: Optional[Dict[str, torch.Tensor]] = None,
+    batch_size: Optional[int] = None,
+) -> List[int]:
+    """
+    使用 GNN + 双向 Mamba 模型进行网络拆解
+
+    输入特征只用节点度（degree），图结构通过邻接矩阵传入 GNN。
+    与 mamba_dismantle 的区别：显式使用拓扑信息（邻接矩阵）做消息传递。
+
+    支持两种模式：
+    - 静态（batch_size=None 或 0）：算一次分数后按分数静态移除（旧行为）
+    - 动态（batch_size>0）：每移除 batch_size 个节点后，在剩余子图上重算分数，
+      适应图演化（回应 CoreHD 每步重算 2-core 的优势）
+
+    Parameters
+    ----------
+    G : nx.Graph
+        输入图（节点标签应为 0 到 n-1 的整数，由 unified_interface 标准化）
+    stop_condition : int
+        停止条件：当最大连通分量大小 <= stop_condition 时停止
+    device : str, optional
+        计算设备，默认自动检测
+    model_path : str, optional
+        检查点路径（优先级最高）
+    weights : Dict[str, torch.Tensor], optional
+        直接传入 state_dict
+    batch_size : int, optional
+        动态重算的每批移除节点数；None 或 0 表示静态一次性
+
+    Returns
+    -------
+    removal_sequence : List[int]
+        节点移除序列
+    """
+    n = G.number_of_nodes()
+
+    if n == 0:
+        return []
+
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # 构建模型
+    model = _build_gnn_scoring_model(device, model_path=model_path, weights=weights)
+
+    # 静态模式：算一次分数，静态移除
+    if not batch_size:
+        node_ids, scores = _gnn_score_subgraph(G, model, device)
+        score_map = {node_ids[i]: scores[i] for i in range(len(node_ids))}
+        G_tmp = G.copy()
+        return _progressive_remove(G_tmp, score_map, stop_condition, [])
+
+    # 动态模式：每移除 batch_size 个节点后在剩余子图上重算
+    G_tmp = G.copy()
+    removal_sequence = []
+
+    while G_tmp.number_of_nodes() > 0:
+        node_list = list(G_tmp.nodes())
+        n_rem = len(node_list)
+
+        # 标准化子图（节点重标为 0..n_rem-1），提取 degree + 邻接矩阵并前向
+        G_std = nx.relabel_nodes(G_tmp, {v: i for i, v in enumerate(node_list)})
+        node_ids, scores = _gnn_score_subgraph(G_std, model, device)
+
+        # 映射回原节点 ID
+        score_map = {node_list[node_ids[i]]: scores[i] for i in range(n_rem)}
+
+        # 移除分数最高的 batch_size 个节点
+        k = min(batch_size, n_rem)
+        to_remove = sorted(node_list, key=lambda v: score_map[v], reverse=True)[:k]
+        for v in to_remove:
+            removal_sequence.append(v)
+            G_tmp.remove_node(v)
+
+        # 停止条件检查
+        if G_tmp.number_of_nodes() > 0:
+            lcc = max(len(c) for c in nx.connected_components(G_tmp))
+            if lcc <= stop_condition:
+                break
 
     return removal_sequence
