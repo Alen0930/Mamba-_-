@@ -76,6 +76,7 @@ class PPOTrainer:
         k_epochs: int = 3,
         max_grad_norm: float = 0.5,
         use_critic: bool = False,
+        advantage: str = "potential",
     ):
         self.model = model
         self.optimizer = optimizer
@@ -88,6 +89,10 @@ class PPOTrainer:
         self.k_epochs = k_epochs
         self.max_grad_norm = max_grad_norm
         self.use_critic = use_critic
+        if advantage not in ("potential", "lcc", "frag"):
+            raise ValueError(
+                f"advantage 必须是 'potential' / 'lcc' / 'frag'，当前 '{advantage}'")
+        self.advantage = advantage
 
     def update(self, buffer: RolloutBuffer, batch_size: int = 16) -> Dict[str, float]:
         """
@@ -110,6 +115,25 @@ class PPOTrainer:
             advantages, returns = compute_gae(rewards, values_old, dones, self.gamma, self.lam)
             advantages = torch.tensor(advantages, dtype=torch.float32, device=self.device)
             returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
+        elif self.advantage == "frag":
+            # 碎片化势函数增益 P_before - P_after，P = Σ(s_i/n0)²。
+            # 与 potential 的唯一区别是势函数：potential 只看最大分量，
+            # frag 看整个分量分布。图碎成若干中等分量后 potential 信号归零，
+            # frag 仍下降 —— 直接针对 fc_value 的短板（打不散残留巨片）。
+            frag_potentials = np.array(buffer.frag_potentials, dtype=np.float32)
+            advantages = torch.tensor(frag_potentials, dtype=torch.float32,
+                                      device=self.device)
+            returns = advantages
+        elif self.advantage == "lcc":
+            # A/B 对照臂：advantage = -LCC_after/n0。
+            # 累积形式 Σ_t(-LCC_after/n0) = -AUC（n0=n 时），理论上与主指标精确对齐。
+            # 但注意：该量几乎是 step 序号的确定性函数（早步 LCC≈0.9、末步≈0.01），
+            # 与「这一步选了哪个节点」关系很弱；batch 标准化后容易退化成
+            # 「晚步一律正优势」的时变 baseline，而不是 advantage。
+            # 因此只作对照，默认仍用 potential。
+            lcc_fracs = np.array(buffer.lcc_fracs, dtype=np.float32)
+            advantages = -torch.tensor(lcc_fracs, dtype=torch.float32, device=self.device)
+            returns = advantages
         else:
             # per-step 即时 advantage：potential 变化 (lcc_before-lcc_after)/n0 标准化。
             # 能区分「移除关键节点→LCC骤降」的好 step 与「移除无关节点→LCC不变」的差 step；

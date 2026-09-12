@@ -51,6 +51,14 @@ def _fill_remaining(G: nx.Graph, sequence: List[int]) -> List[int]:
     return list(sequence) + remaining
 
 
+# 随机性拆解方法的默认种子，保证「同条件对比」可复现。
+# CoreHD/GND/EI 等内部用 rng 打破同度并列（见 corehd_nx.py 的 Fix0 用 rng.choice
+# 从候选集中挑选），不固定种子时同一张图两次运行会得到不同序列，基线就不可复现。
+# 在 ER/WS 这类同度节点极多的近正则图上，这个问题会显著放大。
+DEFAULT_SEED = 0
+_STOCHASTIC_METHODS = {"random", "CoreHD", "GND", "EI_s1", "EI_s2", "EGND"}
+
+
 def dismantle(G: nx.Graph, method: str, stop_condition: Optional[int] = None, **kwargs) -> List[int]:
     """
     Unified dismantling interface.
@@ -75,7 +83,11 @@ def dismantle(G: nx.Graph, method: str, stop_condition: Optional[int] = None, **
     """
     if method not in METHOD_REGISTRY:
         raise ValueError(f"Unknown method '{method}'. Available: {list(METHOD_REGISTRY.keys())}")
-    
+
+    # 随机性方法注入默认种子，保证同图同结果（显式传入 seed 时以传入值为准）
+    if method in _STOCHASTIC_METHODS and "seed" not in kwargs:
+        kwargs["seed"] = DEFAULT_SEED
+
     # Standardize graph
     G_std = _standardize_graph(G)
     reverse_mapping = G_std.graph["_reverse_mapping"]

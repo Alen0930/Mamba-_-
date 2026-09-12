@@ -88,6 +88,7 @@ class GNNMambaModel(nn.Module):
         d_model: int = 64,
         n_gnn_layers: int = 2,
         n_mamba_layers: int = 2,
+        seq_model: str = "mamba",
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -95,6 +96,15 @@ class GNNMambaModel(nn.Module):
         self.d_model = d_model
         self.n_gnn_layers = n_gnn_layers
         self.n_mamba_layers = n_mamba_layers
+        # 序列模型类型：
+        #   'mamba'     : 双向 Mamba（本项目方法，O(N) 线性复杂度）
+        #   'attention' : 标准多头自注意力（Transformer 式，O(N²)）+ FFN
+        #   当 n_mamba_layers=0 时二者都不建，退化为纯 GCN
+        # 这个开关用于验证方法的核心论断：Mamba 的线性复杂度在大规模网络上
+        # 相对注意力的扩展性优势（显存/耗时随 N 的增长）。
+        if seq_model not in ("mamba", "attention"):
+            raise ValueError(f"seq_model 必须是 'mamba' 或 'attention'，当前 '{seq_model}'")
+        self.seq_model = seq_model
 
         # ---- GCN 编码器 ----
         self.gnn_layers = nn.ModuleList()
@@ -113,8 +123,25 @@ class GNNMambaModel(nn.Module):
                 use_fast_path=False,  # RTX 5060 兼容
             )
 
-        self.mamba_fwd = nn.ModuleList([_make_mamba() for _ in range(n_mamba_layers)])
-        self.mamba_bwd = nn.ModuleList([_make_mamba() for _ in range(n_mamba_layers)])
+        # n_mamba_layers=0 -> 纯 GCN 模型（消融用：验证序列模型到底有没有贡献）
+        self.mamba_fwd = nn.ModuleList()
+        self.mamba_bwd = nn.ModuleList()
+        self.attn_layers = nn.ModuleList()
+        if n_mamba_layers > 0:
+            if seq_model == "mamba":
+                self.mamba_fwd = nn.ModuleList([_make_mamba() for _ in range(n_mamba_layers)])
+                self.mamba_bwd = nn.ModuleList([_make_mamba() for _ in range(n_mamba_layers)])
+            else:
+                # 自注意力本身双向（不加因果掩码），与双向 Mamba 对齐；
+                # dim_feedforward=2*d_model 与 Mamba 的 expand=2 量级对齐，
+                # 使两者的参数量与计算量可比。
+                self.attn_layers = nn.ModuleList([
+                    nn.TransformerEncoderLayer(
+                        d_model=d_model, nhead=4, dim_feedforward=2 * d_model,
+                        dropout=0.0, batch_first=True, norm_first=True,
+                    )
+                    for _ in range(n_mamba_layers)
+                ])
 
         # ---- 输出层 ----
         self.output_proj = nn.Linear(d_model, 1)
@@ -129,6 +156,7 @@ class GNNMambaModel(nn.Module):
             'd_model': self.d_model,
             'n_gnn_layers': self.n_gnn_layers,
             'n_mamba_layers': self.n_mamba_layers,
+            'seq_model': self.seq_model,
         }
 
     def _init_weights(self):
@@ -186,6 +214,19 @@ class GNNMambaModel(nn.Module):
         # 屏蔽 padding 节点（归零，避免污染序列传播）
         if mask is not None:
             h = h * mask.float().unsqueeze(-1)
+
+        # 消融：n_mamba_layers=0 -> 纯 GCN 编码（不接序列模型）
+        if self.n_mamba_layers == 0:
+            return h
+
+        # 自注意力路径（O(N²)，Transformer 式；本身双向，无需 flip）
+        if self.seq_model == "attention":
+            # 用 key_padding_mask 让 padding 不参与注意力（比 Mamba 路径更干净）
+            pad_mask = (~mask) if mask is not None else None
+            hh = h
+            for layer in self.attn_layers:
+                hh = layer(hh, src_key_padding_mask=pad_mask)
+            return hh
 
         # 前向 Mamba
         h_fwd = h

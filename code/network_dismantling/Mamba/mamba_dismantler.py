@@ -221,9 +221,12 @@ def _load_gnn_checkpoint_model(checkpoint_path: str, device: str) -> GNNMambaMod
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
         config = checkpoint.get('model_config')
+        # 训练时用的节点序列排序，推理必须一致（否则 Mamba 看到的序列分布变了）
+        order = checkpoint.get('order', 'degree')
     else:
         state_dict = checkpoint
         config = None
+        order = 'degree'
 
     if config:
         model = GNNMambaModel(**config)
@@ -233,6 +236,8 @@ def _load_gnn_checkpoint_model(checkpoint_path: str, device: str) -> GNNMambaMod
     model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
+    # 挂在模型上，供 _gnn_score_subgraph 使用（旧 checkpoint 无此键 -> 默认 degree）
+    model.order = order
     return model
 
 
@@ -256,7 +261,11 @@ def _build_gnn_scoring_model(
 
 def _gnn_score_subgraph(G_std: nx.Graph, model: GNNMambaModel, device: str):
     """在标准化子图（节点 0..n-1）上计算 GNN 分数，返回 (node_ids, scores)"""
-    features, node_ids = extract_node_features(G_std, feature_set='degree')  # (n, 1)
+    # 序列排序必须与训练时一致（模型自带该属性；旧检查点/无该属性时退回 degree）
+    order = getattr(model, 'order', 'degree')
+    features, node_ids = extract_node_features(
+        G_std, feature_set='degree', order=order
+    )  # (n, 1)
     adj = nx.to_numpy_array(G_std, dtype=np.uint8)                            # (n, n)
     adj = adj[np.ix_(node_ids, node_ids)]
     with torch.no_grad():

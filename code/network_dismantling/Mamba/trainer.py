@@ -6,7 +6,7 @@ Mamba 网络拆解模型训练引擎
 import os
 import time
 import logging
-from typing import List, Dict, Tuple, Optional, Callable
+from typing import List, Dict, Tuple, Optional, Callable, Sequence
 from pathlib import Path
 
 import torch
@@ -18,6 +18,7 @@ import networkx as nx
 
 from .mamba_model import MambaDismantlingModel
 from .feature_encoding import extract_node_features
+from .auc_eval import mean_auc
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,8 @@ class DismantlingDataset(Dataset):
         graphs: List[nx.Graph],
         dismantler_fn: Callable[[nx.Graph], List[int]],
         cache_features: bool = True,
-        feature_set: str = "all"
+        feature_set: str = "all",
+        order: str = "degree",
     ):
         """
         Parameters
@@ -141,11 +143,15 @@ class DismantlingDataset(Dataset):
         feature_set : str
             特征集选择，透传给 extract_node_features：'all' | 'degree'
             （'degree' 用于消融实验，仅用节点度作为输入特征）
+        order : str
+            节点序列排序方式，透传给 extract_node_features：'degree' | 'bfs' | 'dfs' | 'core'
+            （只影响 Mamba 看到的序列顺序，GCN 对置换等变、不受影响）
         """
         self.graphs = graphs
         self.dismantler_fn = dismantler_fn
         self.cache_features = cache_features
         self.feature_set = feature_set
+        self.order = order
 
         # 缓存
         self.cached_data = None
@@ -177,8 +183,10 @@ class DismantlingDataset(Dataset):
         # 标准化图（节点重标记为 0..n-1）
         G_std = self._standardize_graph(G)
 
-        # 提取特征序列
-        features, node_ids = extract_node_features(G_std, feature_set=self.feature_set)
+        # 提取特征序列（节点顺序由 self.order 决定，只影响 Mamba 分支）
+        features, node_ids = extract_node_features(
+            G_std, feature_set=self.feature_set, order=self.order
+        )
 
         # 提取邻接矩阵（与特征序列同一节点顺序，供 GNN 使用）
         adj = nx.to_numpy_array(G_std, dtype=np.uint8)
@@ -304,7 +312,11 @@ class MambaTrainer:
         device: str = 'cuda',
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
-        checkpoint_dir: str = 'checkpoints'
+        checkpoint_dir: str = 'checkpoints',
+        select_by: str = 'loss',
+        auc_graphs: Optional[Sequence[nx.Graph]] = None,
+        auc_subset: int = 5,
+        order: str = 'degree',
     ):
         """
         Parameters
@@ -319,6 +331,13 @@ class MambaTrainer:
             权重衰减（L2 正则化）
         checkpoint_dir : str
             模型保存目录
+        select_by : str
+            best_model.pth 的选择准则：'loss'（ListMLE 验证损失，默认，向后兼容）
+            或 'auc'（验证图上的静态拆解 AUC，主指标）
+        auc_graphs : sequence of nx.Graph, optional
+            select_by='auc' 时用于评测的验证图（通常传 val_dataset.graphs）
+        auc_subset : int
+            每 epoch 只评测前 k 张验证图以控制开销（训练结束后另做全量复核）
         """
         self.model = model.to(device)
         self.device = device
@@ -337,11 +356,25 @@ class MambaTrainer:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+        # 选模型准则：'loss'（ListMLE 验证损失）或 'auc'（主指标，静态拆解 AUC）
+        if select_by not in ('loss', 'auc'):
+            raise ValueError(f"select_by 必须是 'loss' 或 'auc'，当前 '{select_by}'")
+        if select_by == 'auc' and not auc_graphs:
+            raise ValueError("select_by='auc' 时必须提供 auc_graphs（验证图列表）")
+        self.select_by = select_by
+        self.auc_graphs = list(auc_graphs) if auc_graphs else []
+        self.auc_subset = auc_subset
+        # 节点序列排序方式。存进 checkpoint 供推理侧复用——推理时必须用与训练
+        # 一致的排序，否则 Mamba 看到的序列分布就变了。
+        self.order = order
+
         # 训练状态
         self.current_epoch = 0
         self.train_losses = []
         self.val_losses = []
         self.best_val_loss = float('inf')
+        self.val_aucs = []
+        self.best_val_auc = float('inf')
 
     def train_epoch(self, train_loader: DataLoader) -> float:
         """
@@ -464,13 +497,32 @@ class MambaTrainer:
 
             # 验证
             val_loss = None
+            val_auc = None
             if val_loader is not None:
                 val_loss = self.validate(val_loader)
                 self.val_losses.append(val_loss)
 
-                # 保存最佳模型
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
+                # 主指标（AUC）：按选模型准则决定是否每轮评测
+                if self.select_by == 'auc':
+                    val_auc = mean_auc(
+                        self.model, self.auc_graphs, self.device, self.auc_subset,
+                        order=self.order,
+                    )
+                    self.val_aucs.append(val_auc)
+
+            # 保存最佳模型（准则由 select_by 决定）
+            if val_loader is not None:
+                improved = False
+                if self.select_by == 'auc':
+                    if val_auc is not None and val_auc < self.best_val_auc:
+                        self.best_val_auc = val_auc
+                        improved = True
+                else:
+                    if val_loss < self.best_val_loss:
+                        self.best_val_loss = val_loss
+                        improved = True
+
+                if improved:
                     best_epoch = epoch
                     patience_counter = 0
                     self.save_checkpoint('best_model.pth')
@@ -484,6 +536,8 @@ class MambaTrainer:
                 info = f"Epoch {epoch+1}/{num_epochs} | Train Loss: {train_loss:.4f}"
                 if val_loss is not None:
                     info += f" | Val Loss: {val_loss:.4f}"
+                if val_auc is not None:
+                    info += f" | Val AUC: {val_auc:.4f}"
                 info += f" | Time: {elapsed:.2f}s"
                 logger.info(info)
                 print(info)
@@ -494,18 +548,32 @@ class MambaTrainer:
 
             # 早停
             if val_loader is not None and patience_counter >= patience:
+                metric_name = 'Val AUC' if self.select_by == 'auc' else '验证损失'
                 logger.info(f"早停触发，最佳 epoch: {best_epoch+1}")
-                print(f"早停触发，最佳验证损失在 epoch {best_epoch+1}")
+                print(f"早停触发，最佳 {metric_name} 在 epoch {best_epoch+1}")
                 break
 
-        # 训练结束，加载最佳模型
+        # 训练结束，加载最佳模型。
+        # ⚠️ load_checkpoint 会把 train_losses/val_losses 覆盖成「保存最佳检查点那一刻」
+        # 的历史快照（长度 = 最佳 epoch 的序号），而摘要在它之后打印——若不先记下来，
+        # 「完成轮数 / 最终损失」就会显示成最佳 epoch 的值而不是真实的总轮数。
+        # 这个坑已实际误导过一次排查（27 轮跑完却显示 12 轮，差值恰好等于 patience）。
+        n_epochs_run = len(self.train_losses)
+        final_train_loss = self.train_losses[-1] if self.train_losses else float("nan")
+        final_val_loss = self.val_losses[-1] if self.val_losses else float("nan")
+
         if val_loader is not None and (self.checkpoint_dir / 'best_model.pth').exists():
             self.load_checkpoint('best_model.pth')
             logger.info("加载最佳模型")
 
         return {
             'train_loss': self.train_losses,
-            'val_loss': self.val_losses
+            'val_loss': self.val_losses,
+            'val_auc': self.val_aucs,
+            'best_val_auc': self.best_val_auc,
+            'n_epochs_run': n_epochs_run,
+            'final_train_loss': final_train_loss,
+            'final_val_loss': final_val_loss,
         }
 
     def save_checkpoint(self, filename: str):
@@ -517,6 +585,10 @@ class MambaTrainer:
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'best_val_loss': self.best_val_loss,
+            'val_aucs': self.val_aucs,
+            'best_val_auc': self.best_val_auc,
+            'select_by': self.select_by,
+            'order': self.order,
             'model_config': self.model.get_config()
         }
 
@@ -541,6 +613,8 @@ class MambaTrainer:
         self.train_losses = checkpoint.get('train_losses', [])
         self.val_losses = checkpoint.get('val_losses', [])
         self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        self.val_aucs = checkpoint.get('val_aucs', [])
+        self.best_val_auc = checkpoint.get('best_val_auc', float('inf'))
 
         logger.info(f"检查点已加载: {load_path}, epoch {self.current_epoch}")
 

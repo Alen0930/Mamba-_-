@@ -75,13 +75,32 @@ def create_actor_critic_from_supervised(
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
         config = checkpoint.get('model_config') or {}
+        # 训练时用的节点序列排序（推理必须一致）
+        order = checkpoint.get('order', 'degree')
     else:
         state_dict = checkpoint
         config = {}
+        order = 'degree'
 
     model = GNNMambaActorCritic(**config)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    # 预期只缺 value_head（随机初始化即可）
+
+    # 预期只缺 value_head（RL 新增，随机初始化即可）。
+    # 必须显式校验：strict=False 会静默吞掉真实的架构不匹配——比如换了
+    # n_gnn_layers/d_model 之后，编码器权重会**全部加载失败但仍不报错**，
+    # 结果是拿一个随机初始化的编码器去起 RL，训练必然失败却很难定位。
+    bad_missing = [k for k in missing if not k.startswith("value_head.")]
+    if bad_missing or unexpected:
+        raise RuntimeError(
+            "监督检查点与 Actor-Critic 架构不匹配：\n"
+            f"  非 value_head 的缺失权重: {bad_missing[:8]}{' ...' if len(bad_missing) > 8 else ''}\n"
+            f"  多余的权重: {unexpected[:8]}{' ...' if len(unexpected) > 8 else ''}\n"
+            f"  检查点 config={config}\n"
+            "  提示：改了 n_gnn_layers / d_model / hidden_dim 等结构参数后，"
+            "需要用同样配置重新训练监督模型。"
+        )
+
     model = model.to(device)
+    model.order = order  # 供推理侧（greedy_sequence / rl_env）复用同一排序
     model.train()  # RL 需要梯度
     return model

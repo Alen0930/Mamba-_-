@@ -83,7 +83,7 @@ def evaluate_sequence(G, seq, stop_condition=0.1):
         trace_slcc.append(0)
 
     q_vals = np.arange(1, len(trace_lcc) + 1) / n
-    auc = np.trapz(trace_lcc, q_vals)
+    auc = np.trapezoid(trace_lcc, q_vals)
     slcc_peak = max(trace_slcc) if trace_slcc else 0
     return auc, rem_num, slcc_peak
 

@@ -68,7 +68,7 @@ def evaluate_sequence(G, seq, stop_condition=0.1):
         trace_slcc.append(0)
 
     q_vals = np.arange(1, len(trace_lcc) + 1) / n
-    auc = np.trapz(trace_lcc, q_vals)
+    auc = np.trapezoid(trace_lcc, q_vals)
 
     q_c_opt = 1.0
     for i, lcc in enumerate(trace_lcc):

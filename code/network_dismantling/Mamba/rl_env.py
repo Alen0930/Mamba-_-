@@ -30,6 +30,31 @@ def lcc_size(G: nx.Graph) -> int:
     return max(len(c) for c in nx.connected_components(G))
 
 
+def graph_stats(G: nx.Graph, n0: int):
+    """
+    一次遍历所有分量，同时返回 (最大分量大小, 碎片化指数)。
+
+    碎片化指数 P = Σ_i (s_i / n0)²
+        - 完全连通时 P = 1（只有一个分量，s=n0）
+        - 完全拆散成孤立点时 P = 1/n0 → 0
+        - 它满足 Σ s_i = n0 恒成立，因此**分量越分散、P 越小**
+
+    为什么要它：fc_value（LCC ≤ 1%）要求**所有**分量都小于 1%·n0，而只看
+    最大分量的信号（LCC）在"图已碎成若干中等分量"时是平的——比如 5 个 20 节点
+    的分量（n0=500）时 LCC=20 恒不变，reward 连续多步为 0，策略完全没有动力
+    去拆散这些中等分量。P 对**任何**分量的破裂都下降，恰好补上这一段梯度。
+
+    合并成一次遍历是为了省开销：原实现每步调用两次 lcc_size（移除前后），
+    各走一遍 connected_components；这里一次拿到 LCC 与 P，调用两次，总开销不变。
+    """
+    if G.number_of_nodes() == 0:
+        return 0, 0.0
+    sizes = np.fromiter(
+        (len(c) for c in nx.connected_components(G)), dtype=np.float64
+    )
+    return int(sizes.max()), float(np.sum((sizes / n0) ** 2))
+
+
 class RolloutBuffer:
     """聚合一条 episode 每一步的采样数据，供 PPO 更新重放"""
 
@@ -39,16 +64,21 @@ class RolloutBuffer:
         self.action_positions: List[List[int]] = []  # 每个 step 的 k 个动作位置
         self.rewards: List[float] = []
         self.potentials: List[float] = []   # 每个 step 的 (lcc_before-lcc_after)/n0 即时信号
+        self.lcc_fracs: List[float] = []    # 每个 step 移除后的 LCC/n0（advantage='lcc' 用）
+        self.frag_potentials: List[float] = []  # 碎片化增益 P_before - P_after（advantage='frag' 用）
         self.log_probs_old: List[torch.Tensor] = []  # 标量 tensor（k 个节点 log_prob 之和）
         self.values_old: List[torch.Tensor] = []     # 标量 tensor
         self.dones: List[bool] = []
 
-    def add(self, features, adj, action_positions, reward, log_prob, value, done, potential):
+    def add(self, features, adj, action_positions, reward, log_prob, value, done,
+            potential, lcc_frac, frag_potential):
         self.features.append(features)
         self.adjs.append(adj)
         self.action_positions.append(action_positions)
         self.rewards.append(reward)
         self.potentials.append(potential)
+        self.lcc_fracs.append(lcc_frac)
+        self.frag_potentials.append(frag_potential)
         self.log_probs_old.append(log_prob.detach())
         self.values_old.append(value.detach())
         self.dones.append(done)
@@ -59,6 +89,8 @@ class RolloutBuffer:
         self.action_positions.clear()
         self.rewards.clear()
         self.potentials.clear()
+        self.lcc_fracs.clear()
+        self.frag_potentials.clear()
         self.log_probs_old.clear()
         self.values_old.clear()
         self.dones.clear()
@@ -72,7 +104,11 @@ def _score_subgraph(model, G_std, device):
     在标准化子图上做一次前向，返回 (features, adj, node_ids, logits, value)。
     node_ids 为度降序排列的 G_std 节点 ID，logits 的顺序与其一一对应。
     """
-    features, node_ids = extract_node_features(G_std, feature_set='degree')  # (n,1)
+    # 序列排序由模型自带（与训练/监督预训练一致）
+    order = getattr(model, 'order', 'degree')
+    features, node_ids = extract_node_features(
+        G_std, feature_set='degree', order=order
+    )  # (n,1)
     adj = nx.to_numpy_array(G_std, dtype=np.uint8)
     adj = adj[np.ix_(node_ids, node_ids)]
     with torch.no_grad():
@@ -143,8 +179,8 @@ def sample_trajectory(
 
         action_positions, log_prob = _sample_k(logits, action_k)
 
-        # 移除前 LCC（potential-based shaping 需要）
-        lcc_before = lcc_size(G_tmp)
+        # 移除前的图统计（potential-based shaping 需要）
+        lcc_before, frag_before = graph_stats(G_tmp, n0)
 
         # 移除这 k 个节点
         for pos in action_positions:
@@ -152,15 +188,24 @@ def sample_trajectory(
             G_tmp.remove_node(removed_orig)
 
         k_removed = len(action_positions)
-        lcc = lcc_size(G_tmp)
+        lcc, frag_after = graph_stats(G_tmp, n0)
         done = lcc <= stop_condition
-        # potential-based reward shaping：-步数 + LCC 下降量。
-        # 累积回报 = -stop_step + (LCC_0 - LCC_final)/n0 ≈ -stop_step + 1（常数），
-        # 因此不改变最优策略，但每一步都有「移除关键节点 → LCC 骤降 → 即时正信号」。
+        # potential-based reward shaping：-步数 + 势函数下降量。
+        # 累积回报 = -stop_step + (Φ_0 - Φ_final)，不改变最优策略，但每步都有即时信号。
+        #
+        # 两种势函数，由 --advantage 选择（见 ppo_trainer）：
+        #   potential : Φ = LCC/n0          -> 只奖励"最大分量变小"
+        #   frag      : Φ = Σ(s_i/n0)²      -> 奖励"任何分量破裂"，包括拆散中等分量
+        # frag 是为 fc_value（LCC ≤ 1%，要求**所有**分量都小）准备的：
+        # 图碎成若干中等分量后 LCC 不再下降，potential 信号归零、策略失去动力，
+        # 而 frag 仍然下降，继续提供梯度。
         potential = (lcc_before - lcc) / n0
+        frag_potential = frag_before - frag_after
+        lcc_frac = lcc / n0
         reward = -float(k_removed) + potential
 
-        buffer.add(features, adj, action_positions, reward, log_prob, value, done, potential)
+        buffer.add(features, adj, action_positions, reward, log_prob, value, done,
+                   potential, lcc_frac, frag_potential)
 
         if done:
             break

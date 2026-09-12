@@ -27,7 +27,7 @@ from network_dismantling.Mamba.rl_env import lcc_size
 from network_dismantling.Mamba.feature_encoding import extract_node_features
 from network_dismantling.unified_interface import dismantle
 from network_dismantling.Mamba.model_io import unregister_model
-from evaluate import calc_metrics
+from evaluate import calc_metrics, calc_all_metrics, complete_sequence
 
 
 def build_test_graph(n, m=3, seed=0):
@@ -39,13 +39,22 @@ def build_test_graph(n, m=3, seed=0):
 
 
 def greedy_sequence(model, G, device, stop_condition):
-    """RL 贪心：每步选 logits 最高节点，动态重算"""
+    """
+    RL 贪心：每步选 logits 最高节点，动态重算。
+
+    在 LCC <= stop_condition 处停止后，**按 degree 降序补齐到 n**——
+    与 dismantle() 对所有基线做的 _fill_remaining 完全一致。
+    不补齐的话序列只有 ~0.3n，AUC 会因曲线被截断而虚低（RL 白赚便宜），
+    与 CoreHD/degree 不可比。
+    """
     G_tmp = G.copy()
     seq = []
     while G_tmp.number_of_nodes() > 0:
         node_list = list(G_tmp.nodes())
         G_std = nx.relabel_nodes(G_tmp, {v: i for i, v in enumerate(node_list)})
-        features, node_ids = extract_node_features(G_std, feature_set='degree')
+        features, node_ids = extract_node_features(
+            G_std, feature_set='degree', order=getattr(model, 'order', 'degree')
+        )
         adj = nx.to_numpy_array(G_std, dtype=np.uint8)
         adj = adj[np.ix_(node_ids, node_ids)]
         with torch.no_grad():
@@ -58,7 +67,7 @@ def greedy_sequence(model, G, device, stop_condition):
         G_tmp.remove_node(removed_orig)
         if G_tmp.number_of_nodes() > 0 and lcc_size(G_tmp) <= stop_condition:
             break
-    return seq
+    return complete_sequence(G, seq)
 
 
 def main():
